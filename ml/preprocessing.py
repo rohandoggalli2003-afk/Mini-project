@@ -1,66 +1,213 @@
 import numpy as np
 import pandas as pd
 
+# ==================================================
+# CONFIGURATION
+# ==================================================
+
 TARGET_COLUMN = "failure"
 
 DROP_COLUMNS = [
     "vehicle_id",
     "timestamp",
+
+    # Original vehicle year is removed
+    "vehicle_year",
+
+    # Columns used to create the target
     "engine_failure_imminent",
     "brake_issue_imminent",
     "battery_issue_imminent",
+
+    # Target-related information
     "failure_date",
     "failure_type",
+
+    # Location information
     "gps_latitude",
     "gps_longitude",
 ]
 
+# ==================================================
+# LOAD AND PREPARE DATA
+# ==================================================
 
 def load_and_prepare_data(file_path):
+
+    # --------------------------------------------------
+    # Load dataset
+    # --------------------------------------------------
+
     df = pd.read_csv(file_path)
 
-    # 1. Create binary target
+    print("\nDataset loaded successfully.")
+    print("Original dataset shape:", df.shape)
+
+    # --------------------------------------------------
+    # Create target variable
+    # --------------------------------------------------
+
     df[TARGET_COLUMN] = (
         (df["engine_failure_imminent"] == 1)
         | (df["brake_issue_imminent"] == 1)
         | (df["battery_issue_imminent"] == 1)
     ).astype(int)
 
-    # 2. Remove non-feature columns
-    X = df.drop(columns=DROP_COLUMNS + [TARGET_COLUMN], errors="ignore")
-    y = df[TARGET_COLUMN]
+    # ==================================================
+    # FEATURE ENGINEERING
+    # ==================================================
 
-    # 3. Keep numeric columns only
-    X = X.select_dtypes(include=["int64", "float64", "int32", "float32"])
+    print("\nCreating engineered features...")
 
-    # 4. Feature Engineering
-    # Telemetry Stress Ratios
-    if "odometer_km" in X.columns and "vehicle_year" in X.columns:
-        # Assuming current operational reference year
-        X["km_per_year"] = X["odometer_km"] / (2026 - X["vehicle_year"] + 1)
+    # --------------------------------------------------
+    # 1. KM per year
+    # --------------------------------------------------
 
-    if "engine_hours" in X.columns and "odometer_km" in X.columns:
-        X["hours_per_km"] = X["engine_hours"] / (X["odometer_km"] + 1)
+    vehicle_age = 2026 - df["vehicle_year"]
 
-    # Thermal & Power Metrics
-    if "engine_temp_c" in X.columns and "coolant_temp_c" in X.columns:
-        X["temp_ratio"] = X["engine_temp_c"] / (X["coolant_temp_c"] + 1)
+    # Avoid division by zero
+    vehicle_age = vehicle_age.clip(lower=1)
 
-    if "battery_voltage_v" in X.columns and "battery_current_a" in X.columns:
-        X["power_draw_w"] = X["battery_voltage_v"] * X["battery_current_a"]
+    df["km_per_year"] = (
+        df["odometer_km"] / vehicle_age
+    )
 
-    # Mechanical Anomaly Metrics (Wheel Speed Dispersion)
-    wheel_cols = [
+    # --------------------------------------------------
+    # 2. Engine hours per kilometer
+    # --------------------------------------------------
+
+    df["hours_per_km"] = (
+        df["engine_hours"] /
+        (df["odometer_km"] + 1)
+    )
+
+    # --------------------------------------------------
+    # 3. Engine temperature / coolant temperature
+    # --------------------------------------------------
+
+    df["temp_ratio"] = (
+        df["engine_temp_c"] /
+        (df["coolant_temp_c"] + 1)
+    )
+
+    # --------------------------------------------------
+    # 4. Battery power draw
+    # --------------------------------------------------
+
+    df["power_draw_w"] = (
+        df["battery_voltage_v"] *
+        df["battery_current_a"]
+    )
+
+    # --------------------------------------------------
+    # 5. Wheel speed variation
+    # --------------------------------------------------
+
+    wheel_speed_columns = [
         "wheel_speed_fl_kph",
         "wheel_speed_fr_kph",
         "wheel_speed_rl_kph",
-        "wheel_speed_rr_kph",
+        "wheel_speed_rr_kph"
     ]
-    if all(col in X.columns for col in wheel_cols):
-        X["wheel_speed_std"] = X[wheel_cols].std(axis=1)
 
-    # 5. Handle missing values (including any inf values created by division)
-    X = X.replace([np.inf, -np.inf], np.nan)
-    X = X.fillna(X.median(numeric_only=True))
+    df["wheel_speed_std"] = (
+        df[wheel_speed_columns].std(axis=1)
+    )
+
+    # --------------------------------------------------
+    # Select features
+    # --------------------------------------------------
+
+    X = df.drop(
+        columns=DROP_COLUMNS + [TARGET_COLUMN],
+        errors="ignore"
+    )
+
+    y = df[TARGET_COLUMN]
+
+    # --------------------------------------------------
+    # Keep numeric columns only
+    # --------------------------------------------------
+
+    X = X.select_dtypes(
+        include=[
+            "int64",
+            "float64",
+            "int32",
+            "float32"
+        ]
+    )
+
+    # --------------------------------------------------
+    # Remove constant columns
+    # --------------------------------------------------
+
+    constant_columns = [
+        column
+        for column in X.columns
+        if X[column].nunique() <= 1
+    ]
+
+    if constant_columns:
+
+        print("\nConstant features removed:")
+
+        for column in constant_columns:
+            print("-", column)
+
+        X = X.drop(
+            columns=constant_columns
+        )
+
+    # --------------------------------------------------
+    # Handle infinite values
+    # --------------------------------------------------
+
+    X = X.replace(
+        [np.inf, -np.inf],
+        np.nan
+    )
+
+    # --------------------------------------------------
+    # Handle missing values
+    # --------------------------------------------------
+
+    X = X.fillna(
+        X.median(numeric_only=True)
+    )
+
+    # ==================================================
+    # DISPLAY INFORMATION
+    # ==================================================
+
+    print("\nFinal feature shape:", X.shape)
+
+    print("\nFinal features:")
+
+    for i, feature in enumerate(
+        X.columns,
+        start=1
+    ):
+        print(
+            f"{i:2d}. {feature}"
+        )
+
+    print("\nTarget distribution:")
+
+    print(
+        y.value_counts()
+    )
+
+    print("\nTarget proportions:")
+
+    print(
+        y.value_counts(
+            normalize=True
+        )
+    )
+
+    # --------------------------------------------------
+    # Return data
+    # --------------------------------------------------
 
     return X, y
